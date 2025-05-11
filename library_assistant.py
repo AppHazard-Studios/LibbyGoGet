@@ -19,7 +19,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QFrame, QScrollArea, QLineEdit, QSplitter,
     QComboBox, QCheckBox, QTextEdit, QDialog,
-    QDialogButtonBox, QProgressBar, QStackedWidget
+    QDialogButtonBox, QProgressBar, QStackedWidget,
+    QMessageBox
 )
 from PyQt6.QtGui import (
     QFont, QFontMetrics, QDragEnterEvent, QDropEvent,
@@ -39,189 +40,9 @@ import keyring
 from settings import Settings
 from utils import setup_logging, generate_book_id, clean_filename, parse_book_list
 from library_manager import EbookCentralPortal
-
-# Worker classes embedded directly to avoid import issues
-class SearchWorker(QObject):
-    """Worker thread to search for books in the background."""
-    searchStarted = pyqtSignal(str)  # book_id
-    searchResult = pyqtSignal(str, dict)  # book_id, results
-    searchError = pyqtSignal(str, str)  # book_id, error message
-    loginRequired = pyqtSignal()
-    finished = pyqtSignal()
-
-    def __init__(self, books, portal, username="", password=""):
-        super().__init__()
-        self.books = books  # List of dicts with 'id', 'title', 'author'
-        self.portal = portal
-        self.username = username
-        self.password = password
-        self.logger = logging.getLogger(__name__)
-        self.cancel_flag = False
-
-    def cancel(self):
-        """Set cancel flag to stop processing."""
-        self.cancel_flag = True
-
-    def search(self):
-        """Search for books on the library portal."""
-        try:
-            # Update portal credentials
-            self.portal.username = self.username
-            self.portal.password = self.password
-
-            # First try logging in if credentials provided
-            if self.username and self.password and not self.portal.is_logged_in:
-                success = self.portal.login()
-                if not success:
-                    self.loginRequired.emit()
-                    self.finished.emit()
-                    return
-
-            # Process each book
-            for book in self.books:
-                if self.cancel_flag:
-                    break
-
-                book_id = book["id"]
-                self.searchStarted.emit(book_id)
-
-                try:
-                    # Search for this book using the portal
-                    result = self.portal.search_book(book["title"], book["author"])
-
-                    # Add book_id to result for reference
-                    result["book_id"] = book_id
-
-                    self.searchResult.emit(book_id, result)
-
-                except Exception as e:
-                    self.logger.exception(f"Error searching for book {book_id}: {str(e)}")
-                    self.searchError.emit(book_id, str(e))
-
-        except Exception as e:
-            self.logger.exception(f"Error in search worker: {str(e)}")
-        finally:
-            self.finished.emit()
-
-
-class DownloadWorker(QObject):
-    """Worker thread to download books in the background."""
-    downloadStarted = pyqtSignal(str)  # book_id
-    downloadProgress = pyqtSignal(str, int)  # book_id, progress percentage
-    downloadComplete = pyqtSignal(str, str)  # book_id, local file path
-    downloadError = pyqtSignal(str, str)  # book_id, error message
-    loginRequired = pyqtSignal()
-    finished = pyqtSignal()
-
-    def __init__(self, books, portal, output_folder, username="", password=""):
-        super().__init__()
-        self.books = books  # Dict of book_id: {download_url, title, etc}
-        self.portal = portal
-        self.output_folder = output_folder
-        self.username = username
-        self.password = password
-        self.logger = logging.getLogger(__name__)
-        self.cancel_flag = False
-
-    def cancel(self):
-        """Set cancel flag to stop processing."""
-        self.cancel_flag = True
-
-    def download(self):
-        """Download books to the output folder."""
-        try:
-            # Update portal credentials
-            self.portal.username = self.username
-            self.portal.password = self.password
-
-            # First try logging in if credentials provided
-            if self.username and self.password and not self.portal.is_logged_in:
-                success = self.portal.login()
-                if not success:
-                    self.loginRequired.emit()
-                    self.finished.emit()
-                    return
-
-            # Ensure output folder exists
-            os.makedirs(self.output_folder, exist_ok=True)
-
-            # Process each book
-            for book_id, book_info in self.books.items():
-                if self.cancel_flag:
-                    break
-
-                self.downloadStarted.emit(book_id)
-
-                try:
-                    # Get required info from book_info
-                    download_url = book_info.get("download_url", "")
-                    title = book_info.get("title", "Unknown")
-                    author = book_info.get("author", "Unknown")
-                    ebook_id = book_info.get("ebook_id", "")
-
-                    if not download_url:
-                        raise ValueError("No download URL available")
-
-                    # Create a clean filename
-                    if author:
-                        filename = f"{author} - {title}"
-                    else:
-                        filename = title
-
-                    filename = self._clean_filename(filename)
-                    output_path = os.path.join(self.output_folder, filename)
-
-                    # Download the book
-                    result = self.portal.download_book(
-                        download_url,
-                        ebook_id,
-                        output_path,
-                        callback=lambda received, total: self._handle_progress(book_id, received, total)
-                    )
-
-                    if result["success"]:
-                        # Emit completion signal
-                        self.downloadComplete.emit(book_id, result["file_path"])
-                    else:
-                        # Emit error signal
-                        self.downloadError.emit(book_id, result.get("message", "Download failed"))
-
-                except Exception as e:
-                    self.logger.exception(f"Error downloading book {book_id}: {str(e)}")
-                    self.downloadError.emit(book_id, str(e))
-
-        except Exception as e:
-            self.logger.exception(f"Error in download worker: {str(e)}")
-        finally:
-            self.finished.emit()
-
-    def _handle_progress(self, book_id, received, total):
-        """Handle download progress updates."""
-        if total > 0 and not self.cancel_flag:
-            progress = int((received / total) * 100)
-            self.downloadProgress.emit(book_id, progress)
-
-    def _clean_filename(self, filename):
-        """Clean a filename to make it safe for all filesystems."""
-        # Replace invalid chars with underscores
-        invalid_chars = r'<>:"/\|?*'
-        for char in invalid_chars:
-            filename = filename.replace(char, '_')
-
-        # Limit length (255 is safe for most filesystems)
-        if len(filename) > 200:
-            base, ext = os.path.splitext(filename)
-            filename = base[:200 - len(ext)] + ext
-
-        # Remove leading/trailing whitespace and periods
-        filename = filename.strip().strip('.')
-
-        # If empty after cleaning, provide a default
-        if not filename:
-            filename = "ebook"
-
-        return filename
-
+from DebugPanel import DebugPanel
+from SearchWorker import SearchWorker
+from DownloadWorker import DownloadWorker
 
 # Custom UI components
 class ElegantFrame(QFrame):
@@ -621,6 +442,15 @@ class BookCard(QWidget):
             """)
             self.bg_frame.bg_color = "#1a3a1f"
 
+        elif status == "Downloading":
+            self.status_label.setText("Downloading...")
+            self.status_label.setStyleSheet("""
+                color: #3498db;
+                font-size: 12px;
+                background-color: transparent;
+            """)
+            self.bg_frame.bg_color = "#1a2a3a"
+
         self.bg_frame.update()
 
     def update_details(self, details):
@@ -785,7 +615,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None, username="", remember_credentials=True):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.resize(400, 350)
+        self.resize(400, 400)  # Make it taller for login status
 
         # Set dialog style - darker theme
         self.setStyleSheet("""
@@ -893,6 +723,16 @@ class SettingsDialog(QDialog):
         self.remember_checkbox.setChecked(self.remember_credentials)
         account_layout.addWidget(self.remember_checkbox)
 
+        # Add connection status area
+        self.login_status = QLabel("")
+        self.login_status.setStyleSheet("""
+            color: #888888;
+            font-size: 13px;
+            min-height: 20px;
+            margin-top: 8px;
+        """)
+        account_layout.addWidget(self.login_status)
+
         layout.addWidget(account_frame)
 
         # About section
@@ -907,21 +747,21 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
 
         # Buttons
-        button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(0, 8, 0, 0)
-        button_layout.setSpacing(12)
+        self.button_layout = QHBoxLayout()  # Make accessible
+        self.button_layout.setContentsMargins(0, 8, 0, 0)
+        self.button_layout.setSpacing(12)
 
-        button_layout.addStretch(1)
+        self.button_layout.addStretch(1)
 
         self.cancel_btn = ElegantButton("Cancel", self)
         self.cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(self.cancel_btn)
+        self.button_layout.addWidget(self.cancel_btn)
 
         self.save_btn = ElegantButton("Save", self, primary=True)
         self.save_btn.clicked.connect(self.accept)
-        button_layout.addWidget(self.save_btn)
+        self.button_layout.addWidget(self.save_btn)
 
-        layout.addLayout(button_layout)
+        layout.addLayout(self.button_layout)
 
 
 class LibraryAssistantApp(QMainWindow):
@@ -945,18 +785,23 @@ class LibraryAssistantApp(QMainWindow):
         self.search_thread = None
         self.download_worker = None
         self.download_thread = None
-
-        # Create library portal instance
-        self.portal = EbookCentralPortal()
+        self.verify_thread = None
+        self.verify_worker = None
 
         # Logger
         self.logger = logging.getLogger(__name__)
+
+        # Debug panel reference
+        self.debug_panel = None
+
+        # Create library portal instance with debug callback
+        self.portal = EbookCentralPortal(debug_callback=self.debug_callback)
 
         # Set up the UI
         self.setWindowTitle("Ridley Library Assistant")
         self.setMinimumWidth(800)
         self.setMinimumHeight(600)
-        self.resize(1000, 700)  # Default size
+        self.resize(1200, 800)  # Default size - larger for debug panel
 
         # Set app style - darker theme
         self.setStyleSheet("""
@@ -1010,16 +855,61 @@ class LibraryAssistantApp(QMainWindow):
             try:
                 self.username = keyring.get_password("LibraryAssistant", "username") or ""
                 self.password = keyring.get_password("LibraryAssistant", "password") or ""
+
                 if self.username and self.password:
-                    self.is_logged_in = True
+                    self.debug_callback(f"Loaded credentials for: {self.username}", "info")
+
                     # Update the portal with credentials
                     self.portal.username = self.username
                     self.portal.password = self.password
+
+                    # Try to verify login
+                    self.verify_credentials_async()
             except Exception as e:
                 self.logger.warning(f"Failed to load credentials: {str(e)}")
+                self.debug_callback(f"Failed to load credentials: {str(e)}", "error")
 
         # Enable drag and drop
         self.setAcceptDrops(True)
+
+    def debug_callback(self, message, level="info", data=None):
+        """Callback for debug messages from library manager."""
+        if self.debug_panel:
+            self.debug_panel.add_message(message, level, data)
+
+    def verify_credentials_async(self):
+        """Verify credentials in a background thread."""
+        # Create a QThread for login verification
+        self.debug_callback("Verifying credentials in background...", "info")
+
+        # For simplicity, we'll reuse the search worker pattern
+        self.verify_thread = QThread()
+
+        # Pass an empty book list - we just want to trigger login
+        self.verify_worker = SearchWorker([], self.portal, self.username, self.password)
+        self.verify_worker.moveToThread(self.verify_thread)
+
+        # Connect signals
+        self.verify_thread.started.connect(self.verify_worker.search)
+        self.verify_worker.loginRequired.connect(self.on_login_required)
+        self.verify_worker.finished.connect(self.on_verify_finished)
+        self.verify_worker.finished.connect(self.verify_thread.quit)
+        self.verify_thread.finished.connect(self.verify_worker.deleteLater)
+        self.verify_thread.finished.connect(self.verify_thread.deleteLater)
+
+        # Start thread
+        self.verify_thread.start()
+
+    def on_verify_finished(self):
+        """Handle verification completion."""
+        if self.portal.is_logged_in:
+            self.debug_callback("✓ Credentials verified successfully", "info")
+            self.is_logged_in = True
+            self.update_login_status_display()
+        else:
+            self.debug_callback("✗ Credential verification failed", "error")
+            self.is_logged_in = False
+            self.update_login_status_display()
 
     def check_first_run(self):
         """Check if this is the first run and show setup dialog if needed."""
@@ -1068,10 +958,24 @@ class LibraryAssistantApp(QMainWindow):
 
         header_layout.addStretch(1)
 
+        # Add login status display
+        self.login_status = QLabel()
+        self.login_status.setStyleSheet("""
+            color: #aaaaaa;
+            font-size: 12px;
+            font-style: italic;
+        """)
+        header_layout.addWidget(self.login_status)
+
         # Settings button
         self.settings_btn = ElegantButton("Settings")
         self.settings_btn.clicked.connect(self.show_settings)
         header_layout.addWidget(self.settings_btn)
+
+        # Debug button
+        self.debug_btn = ElegantButton("Debug")
+        self.debug_btn.clicked.connect(self.toggle_debug_panel)
+        header_layout.addWidget(self.debug_btn)
 
         left_layout.addWidget(header_container)
 
@@ -1130,6 +1034,16 @@ class LibraryAssistantApp(QMainWindow):
         buttons_layout.addWidget(self.clear_btn)
 
         buttons_layout.addStretch(1)
+
+        # Add status indicator during search
+        self.search_status = QLabel("")
+        self.search_status.setStyleSheet("""
+            color: #0078d4;
+            font-size: 13px;
+            font-style: italic;
+        """)
+        buttons_layout.addWidget(self.search_status)
+        self.search_status.setVisible(False)
 
         self.search_btn = ElegantButton("Search Books", primary=True)
         self.search_btn.clicked.connect(self.start_search)
@@ -1242,6 +1156,85 @@ class LibraryAssistantApp(QMainWindow):
         # Add splitter to main layout
         main_layout.addWidget(self.splitter)
 
+        # Create debug panel as a hidden panel initially
+        self.debug_panel = DebugPanel()
+        self.debug_panel.setVisible(False)
+
+        # Update login status display
+        self.update_login_status_display()
+
+    def update_login_status_display(self):
+        """Update login status display."""
+        if self.is_logged_in:
+            self.login_status.setText(f"✓ Logged in as {self.username}")
+            self.login_status.setStyleSheet("""
+                color: #2ecc71;
+                font-size: 12px;
+            """)
+        else:
+            if self.username:
+                self.login_status.setText(f"✗ Login required")
+                self.login_status.setStyleSheet("""
+                    color: #e74c3c;
+                    font-size: 12px;
+                """)
+            else:
+                self.login_status.setText("Not logged in")
+                self.login_status.setStyleSheet("""
+                    color: #aaaaaa;
+                    font-size: 12px;
+                    font-style: italic;
+                """)
+
+    def toggle_debug_panel(self):
+        """Toggle the debug panel visibility."""
+        if not self.debug_panel.isVisible():
+            # Show debug panel at the bottom
+            main_splitter = QSplitter(Qt.Orientation.Vertical)
+            main_splitter.setHandleWidth(1)
+            main_splitter.setChildrenCollapsible(False)
+
+            # Move existing content from central widget
+            old_central = self.centralWidget()
+            new_central = QWidget()
+            main_layout = QVBoxLayout(new_central)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+
+            # Add splitter
+            main_layout.addWidget(main_splitter)
+
+            # Move existing content to splitter
+            main_splitter.addWidget(old_central)
+
+            # Add debug panel to splitter
+            main_splitter.addWidget(self.debug_panel)
+
+            # Set initial sizes
+            main_splitter.setSizes([700, 300])
+
+            # Set new central widget
+            self.setCentralWidget(new_central)
+
+            # Update button text
+            self.debug_btn.setText("Hide Debug")
+
+            # Show some initial debug info
+            self.debug_callback("Debug panel opened", "info")
+            self.debug_callback(f"Username: {self.username or 'Not set'}", "debug")
+            self.debug_callback(f"Login state: {'Logged in' if self.is_logged_in else 'Not logged in'}", "debug")
+
+        else:
+            # Get the old content widget
+            main_splitter = self.centralWidget().layout().itemAt(0).widget()
+            old_content = main_splitter.widget(0)
+
+            # Remove it from splitter and set as central widget
+            old_content.setParent(None)
+            self.setCentralWidget(old_content)
+
+            # Update button text
+            self.debug_btn.setText("Debug")
+
     def show_login_dialog(self, first_run=False):
         """Show login dialog for library portal."""
         dialog = LoginDialog(self, first_run)
@@ -1279,6 +1272,11 @@ class LibraryAssistantApp(QMainWindow):
         """Show settings dialog."""
         dialog = SettingsDialog(self, self.username, self.settings.get("remember_credentials", True))
 
+        # Add Test Connection button
+        test_btn = ElegantButton("Test Connection")
+        test_btn.clicked.connect(lambda: self.test_connection(dialog))
+        dialog.button_layout.insertWidget(1, test_btn)
+
         if dialog.exec():
             # Get updated settings
             self.username = dialog.username_input.text().strip()
@@ -1294,15 +1292,59 @@ class LibraryAssistantApp(QMainWindow):
                 try:
                     keyring.set_password("LibraryAssistant", "username", self.username)
                     keyring.set_password("LibraryAssistant", "password", self.password)
+                    self.debug_callback(f"Saved credentials for: {self.username}", "info")
                 except Exception as e:
                     self.logger.warning(f"Failed to save credentials: {str(e)}")
+                    self.debug_callback(f"Failed to save credentials: {str(e)}", "error")
 
-            # Update login status
-            if self.username and self.password:
-                self.is_logged_in = True
-                # Update the portal with credentials
-                self.portal.username = self.username
-                self.portal.password = self.password
+            # Update portal
+            self.portal.username = self.username
+            self.portal.password = self.password
+
+            # Test connection with new credentials
+            self.verify_credentials_async()
+
+    def test_connection(self, dialog=None):
+        """Test connection to the library portal."""
+        # Get credentials from dialog if available
+        if dialog:
+            username = dialog.username_input.text().strip()
+            password = dialog.password_input.text()
+        else:
+            username = self.username
+            password = self.password
+
+        if not username or not password:
+            self.show_message("Error", "Please enter username and password")
+            return
+
+        # Update status
+        if dialog:
+            old_text = dialog.login_status.text()
+            dialog.login_status.setText("Testing connection...")
+            dialog.login_status.setStyleSheet("color: #3498db;")
+            QApplication.processEvents()
+
+        # Create a temporary portal for the test
+        test_portal = EbookCentralPortal(username, password, self.debug_callback)
+
+        # Run test
+        self.debug_callback(f"Testing connection with username: {username}", "info")
+        result = test_portal.test_connection()
+
+        # Show result
+        if result["success"]:
+            success_msg = f"Connection successful! Logged in as: {username}"
+            self.debug_callback(success_msg, "info", result)
+            if dialog:
+                dialog.login_status.setText("✓ Connection successful!")
+                dialog.login_status.setStyleSheet("color: #2ecc71;")
+        else:
+            error_msg = f"Connection failed: {result['message']}"
+            self.debug_callback(error_msg, "error", result)
+            if dialog:
+                dialog.login_status.setText(f"✗ Connection failed: {result['message']}")
+                dialog.login_status.setStyleSheet("color: #e74c3c;")
 
     def import_from_file(self):
         """Import book list from text file."""
@@ -1325,14 +1367,17 @@ class LibraryAssistantApp(QMainWindow):
 
                 # Update text input
                 self.books_input.setText(content)
+                self.debug_callback(f"Imported book list from: {file_path}", "info")
 
             except Exception as e:
                 self.logger.error(f"Error importing file: {str(e)}")
-                # Show error message - would use QMessageBox in a real implementation
+                self.debug_callback(f"Error importing file: {str(e)}", "error")
+                self.show_message("Import Error", f"Could not import file: {str(e)}")
 
     def clear_input(self):
         """Clear input fields."""
         self.books_input.clear()
+        self.debug_callback("Cleared input", "info")
 
     def browse_output_folder(self):
         """Browse for output folder."""
@@ -1347,6 +1392,7 @@ class LibraryAssistantApp(QMainWindow):
             self.settings.save()
             self.output_folder_label.setText(self._format_folder_path(folder))
             self.output_folder_label.setToolTip(folder)
+            self.debug_callback(f"Selected output folder: {folder}", "info")
 
     def _format_folder_path(self, path, max_length=30):
         """Format folder path for display."""
@@ -1402,12 +1448,53 @@ class LibraryAssistantApp(QMainWindow):
 
         return books
 
+    def show_message(self, title, message):
+        """Show a message dialog."""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(message)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg_box.exec()
+
+    def on_login_required(self):
+        """Handle login required notification."""
+        # Stop current search/download
+        if self.search_thread and self.search_thread.isRunning():
+            self.debug_callback("Cancelling search thread due to login requirement", "info")
+            self.search_worker.cancel()
+
+        if self.download_thread and self.download_thread.isRunning():
+            self.debug_callback("Cancelling download thread due to login requirement", "info")
+            self.download_worker.cancel()
+
+        # Force login dialog (not settings)
+        self.debug_callback("Showing login dialog due to authentication failure", "error")
+        self.show_login_dialog(first_run=False)
+
+        # If login successful, verify with portal
+        if self.username and self.password and not self.portal.is_logged_in:
+            self.debug_callback("Testing login with new credentials", "info")
+            if self.portal.login():
+                self.debug_callback("Login successful with new credentials", "info")
+                self.is_logged_in = True
+                self.update_login_status_display()
+            else:
+                self.debug_callback("Login still failed with new credentials", "error")
+                self.is_logged_in = False
+                self.update_login_status_display()
+
+        # Re-enable search button and update UI
+        self.search_btn.setEnabled(True)
+        self.search_status.setVisible(False)
+
     def start_search(self):
         """Start search process for parsed books."""
         # Parse books
         books = self.parse_books()
         if not books:
-            # Show message if no books to search
+            self.debug_callback("No books to search", "info")
+            self.show_message("No Books", "Please enter at least one book to search for")
             return
 
         # Clear previous results
@@ -1422,6 +1509,10 @@ class LibraryAssistantApp(QMainWindow):
 
         # Disable search button during search
         self.search_btn.setEnabled(False)
+        self.search_status.setText("Searching...")
+        self.search_status.setVisible(True)
+
+        self.debug_callback(f"Starting search for {len(books)} books", "info")
 
         # Start worker thread
         self.search_thread = QThread()
@@ -1511,30 +1602,20 @@ class LibraryAssistantApp(QMainWindow):
                     widget.update_status("Error", error_message)
                     break
 
-    def on_login_required(self):
-        """Handle login required notification."""
-        # Stop current search
-        if self.search_thread and self.search_thread.isRunning():
-            self.search_worker.cancel()
-
-        # Show settings dialog
-        self.show_settings()
-
-        # Re-enable search button
-        self.search_btn.setEnabled(True)
-
     def on_search_finished(self):
         """Handle search process finished."""
         # Re-enable search button
         self.search_btn.setEnabled(True)
+        self.search_status.setVisible(False)
+        self.debug_callback("Search completed", "info")
 
     def open_book_link(self, url):
         """Open book link in external browser."""
         if url:
-            # This would use the platform-specific method to open URL
-            # For example, on Windows: os.startfile(url)
-            # On macOS/Linux: subprocess.call(['open', url]) or equivalent
-            print(f"Opening URL: {url}")  # Replace with actual implementation
+            # Use QUrl to open the URL in the default browser
+            url_obj = QUrl(url)
+            QDesktopServices.openUrl(url_obj)
+            self.debug_callback(f"Opening URL in browser: {url}", "info")
 
     def download_book(self, url):
         """Download a single book."""
@@ -1570,6 +1651,9 @@ class LibraryAssistantApp(QMainWindow):
         """Start download worker with specified downloads."""
         # Disable download buttons during download
         self.download_all_btn.setEnabled(False)
+
+        # Log what we're downloading
+        self.debug_callback(f"Starting download for {len(books_to_download)} books", "info")
 
         # Start worker thread
         self.download_thread = QThread()
@@ -1634,6 +1718,9 @@ class LibraryAssistantApp(QMainWindow):
                     widget.update_status("Downloaded")
                     break
 
+            # Show notification
+            self.debug_callback(f"Download complete: {file_path}", "info")
+
     def on_download_error(self, book_id, error_message):
         """Handle download error for a book."""
         if book_id in self.books:
@@ -1647,6 +1734,9 @@ class LibraryAssistantApp(QMainWindow):
                     widget.update_status("Error", error_message)
                     break
 
+            # Log error
+            self.debug_callback(f"Download error for book {book_id}: {error_message}", "error")
+
     def on_download_finished(self):
         """Handle download process finished."""
         # Re-enable download button
@@ -1655,6 +1745,7 @@ class LibraryAssistantApp(QMainWindow):
             for book in self.books.values()
         )
         self.download_all_btn.setEnabled(has_downloadable)
+        self.debug_callback("Download worker finished", "info")
 
     def dragEnterEvent(self, event):
         """Handle drag enter events for files."""
@@ -1678,9 +1769,11 @@ class LibraryAssistantApp(QMainWindow):
 
                         # Update text input
                         self.books_input.setText(content)
+                        self.debug_callback(f"Imported book list from dropped file: {file_path}", "info")
 
                     except Exception as e:
                         self.logger.error(f"Error importing dropped file: {str(e)}")
+                        self.debug_callback(f"Error importing dropped file: {str(e)}", "error")
 
                     event.acceptProposedAction()
                     break

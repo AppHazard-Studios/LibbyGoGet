@@ -23,3 +23,68 @@ TypeError: addLayout(self, layout: Optional[QLayout], stretch: int = 0): argumen
 2025-05-11 21:07:46,289 - root - INFO - Starting Library Assistant
 2025-05-11 21:10:03,296 - library_manager - ERROR - Login failed. Redirected to: https://login.ezproxy.ridley.edu.au/menu
 2025-05-11 21:10:22,470 - library_manager - ERROR - Could not find login form
+2025-05-11 21:39:25,539 - root - INFO - Starting Library Assistant
+2025-05-11 21:41:21,538 - library_manager - INFO - Accessing login page: https://ezproxy.ridley.edu.au/login?url=https%3A//ridley.eblib.com/patron/Authentication.aspx%3Febcid%3D966d562a9fb34b42a8930a460c883505%26echo%3D1&userid=202336479
+2025-05-11 21:41:21,922 - library_manager - INFO - Form action URL: https://ezproxy.ridley.edu.au/login
+2025-05-11 21:41:21,922 - library_manager - INFO - Login data keys: ['url', 'user', 'pass']
+2025-05-11 21:41:21,922 - library_manager - INFO - Submitting login form to: https://ezproxy.ridley.edu.au/login
+2025-05-11 21:41:22,574 - library_manager - INFO - Login response status: 200, URL: https://login.ezproxy.ridley.edu.au/menu
+2025-05-11 21:41:22,575 - library_manager - ERROR - Login failed. Redirected to: https://login.ezproxy.ridley.edu.au/menu
+2025-05-11 21:41:22,575 - library_assistant - INFO - Cancelling search thread due to login requirement
+2025-05-11 21:41:22,575 - library_assistant - INFO - Showing login dialog due to authentication failure
+2025-05-11 21:41:37,587 - library_assistant - INFO - Testing login with new credentials
+2025-05-11 21:41:37,587 - library_manager - INFO - Accessing login page: https://ezproxy.ridley.edu.au/login?url=https%3A//ridley.eblib.com/patron/Authentication.aspx%3Febcid%3D966d562a9fb34b42a8930a460c883505%26echo%3D1&userid=202336479
+2025-05-11 21:41:38,067 - library_manager - ERROR - Could not find login form
+2025-05-11 21:41:38,068 - library_assistant - WARNING - Login still failed with new credentials
+2025-05-11 22:13:35,622 - root - INFO - Starting Library Assistant
+2025-05-11 22:13:35,932 - library_assistant - WARNING - Failed to load credentials: 'time.struct_time' object has no attribute 'created'
+2025-05-11 22:13:35,932 - root - ERROR - Unhandled exception: 'time.struct_time' object has no attribute 'created'
+Traceback (most recent call last):
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 860, in __init__
+    self.debug_callback(f"Loaded credentials for: {self.username}", "info")
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 878, in debug_callback
+    self.debug_panel.add_message(message, level, data)
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/DebugPanel.py", line 136, in add_message
+    time_str = logging.Formatter().formatTime(timestamp, "%H:%M:%S")
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/logging/__init__.py", line 600, in formatTime
+    ct = self.converter(record.created)
+AttributeError: 'time.struct_time' object has no attribute 'created'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/main.py", line 43, in main
+    window = LibraryAssistantApp()
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 870, in __init__
+    self.debug_callback(f"Failed to load credentials: {str(e)}", "error")
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 878, in debug_callback
+    self.debug_panel.add_message(message, level, data)
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/DebugPanel.py", line 136, in add_message
+    time_str = logging.Formatter().formatTime(timestamp, "%H:%M:%S")
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/logging/__init__.py", line 600, in formatTime
+    ct = self.converter(record.created)
+AttributeError: 'time.struct_time' object has no attribute 'created'
+2025-05-11 22:17:04,711 - root - INFO - Starting Library Assistant
+2025-05-11 22:17:04,941 - library_assistant - WARNING - Failed to load credentials: name 'time' is not defined
+2025-05-11 22:17:04,941 - root - ERROR - Unhandled exception: name 'time' is not defined
+Traceback (most recent call last):
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 860, in __init__
+    self.debug_callback(f"Loaded credentials for: {self.username}", "info")
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 878, in debug_callback
+    self.debug_panel.add_message(message, level, data)
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/DebugPanel.py", line 136, in add_message
+    timestamp = time.localtime()
+NameError: name 'time' is not defined
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/main.py", line 43, in main
+    window = LibraryAssistantApp()
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 870, in __init__
+    self.debug_callback(f"Failed to load credentials: {str(e)}", "error")
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 878, in debug_callback
+    self.debug_panel.add_message(message, level, data)
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/DebugPanel.py", line 136, in add_message
+    timestamp = time.localtime()
+NameError: name 'time' is not defined
