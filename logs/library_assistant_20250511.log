@@ -1,0 +1,25 @@
+2025-05-11 20:24:38,071 - root - INFO - Starting Library Assistant
+2025-05-11 20:24:38,820 - root - ERROR - Unhandled exception: addLayout(self, layout: Optional[QLayout], stretch: int = 0): argument 1 has unexpected type 'QWidget'
+Traceback (most recent call last):
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/main.py", line 38, in main
+    window = LibraryAssistantApp()
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 970, in __init__
+    self.setup_ui()
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 1070, in setup_ui
+    input_frame_layout.addLayout(login_container)
+TypeError: addLayout(self, layout: Optional[QLayout], stretch: int = 0): argument 1 has unexpected type 'QWidget'
+2025-05-11 20:27:46,059 - root - INFO - Starting Library Assistant
+2025-05-11 20:27:46,310 - root - ERROR - Unhandled exception: addLayout(self, layout: Optional[QLayout], stretch: int = 0): argument 1 has unexpected type 'QWidget'
+Traceback (most recent call last):
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/main.py", line 38, in main
+    window = LibraryAssistantApp()
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 974, in __init__
+    self.setup_ui()
+  File "/Users/mw/Documents/Documents/Dev/LibbyGoGet/library_assistant.py", line 1163, in setup_ui
+    left_layout.addLayout(output_container)
+TypeError: addLayout(self, layout: Optional[QLayout], stretch: int = 0): argument 1 has unexpected type 'QWidget'
+2025-05-11 20:29:12,527 - root - INFO - Starting Library Assistant
+2025-05-11 20:58:59,065 - root - INFO - Starting Library Assistant
+2025-05-11 21:07:46,289 - root - INFO - Starting Library Assistant
+2025-05-11 21:10:03,296 - library_manager - ERROR - Login failed. Redirected to: https://login.ezproxy.ridley.edu.au/menu
+2025-05-11 21:10:22,470 - library_manager - ERROR - Could not find login form
