@@ -33,7 +33,7 @@ class SearchWorker(QObject):
         try:
             # Update portal credentials
             self.portal.username = self.username
-            self.password = self.password
+            self.portal.password = self.password
 
             # If empty book list, just verify login and return
             if not self.books:

@@ -50,6 +50,8 @@ class EbookCentralPortal:
             self.logger.error(message)
         elif level == "debug":
             self.logger.debug(message)
+        elif level == "warning":
+            self.logger.warning(message)
 
         # Also send to UI callback if available
         if self.debug_callback:
@@ -178,7 +180,7 @@ class EbookCentralPortal:
             return False
 
     def search_book(self, title: str, author: str = "") -> Dict:
-        """Search for a book in Ebook Central.
+        """Search for a book in Ebook Central using the exact API endpoint from CURL.
 
         Args:
             title: Book title
@@ -198,74 +200,94 @@ class EbookCentralPortal:
                         "message": "Login required"
                     }
 
-            # Prepare search query
-            query = f"{title}"
+            # Clean up the search query
+            search_query = title.strip()
             if author:
-                query += f" {author}"
+                # Include author in search if provided
+                author = author.strip()
+                search_query = f"{search_query} {author}"
 
-            self._debug(f"Searching for: '{query}'")
+            self._debug(f"Searching for: '{search_query}'", "info")
 
-            # Use the API approach for searching
-            api_url = f"{self.base_url}/ebc/api/search"
+            # First visit the homepage to establish proper cookies
+            home_url = f"{self.base_url}/lib/{self.lib_id}/home.action"
+            self._debug(f"Getting home page to establish cookies: {home_url}", "info")
+            home_response = self.session.get(home_url, timeout=30)
 
-            # API parameters - keep it simple
-            api_params = {
-                "query": query.strip(),
-                "libraryId": self.lib_id,
-                "pageNo": 1,
-                "pageSize": 20,
-                "sortBy": "score"
-            }
+            # Now use the exact API endpoint from CURL
+            api_url = f"{self.base_url}/lib/{self.lib_id}/api/search"
 
-            # Use headers to mimic browser for API request
+            # Use the exact headers from CURL
             headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Referer": f"{self.base_url}/lib/{self.lib_id}/home.action"
+                'accept': 'application/json, text/plain, */*',
+                'content-type': 'application/json',
+                'origin': self.base_url,
+                'referer': f"{self.base_url}/ebc/lib/{self.lib_id}/",
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
 
-            # Make the API call
-            self._debug(f"API request to: {api_url} with params: {api_params}")
+            # Use the exact JSON structure from CURL
+            json_data = {
+                "query": search_query,
+                "facetPublishedPageSize": 3,
+                "facetCategoryPageSize": 5,
+                "facetBisacSubjectPageSize": 5,
+                "facetLanguagePageSize": 5,
+                "facetAuthorPageSize": 5,
+                "pageNo": 1,
+                "pageSize": 10,
+                "sortBy": "score",
+                "toChapter": False
+            }
 
-            api_response = self.session.get(
+            self._debug(f"Making API search request: POST {api_url}", "info")
+            self._debug(f"JSON data: {json_data}", "debug")
+
+            # Make the API request - use POST with JSON data as shown in CURL
+            api_response = self.session.post(
                 api_url,
-                params=api_params,
+                json=json_data,  # This automatically sets the correct Content-Type and serializes to JSON
                 headers=headers,
                 timeout=30
             )
 
-            self._debug(f"API response status: {api_response.status_code}")
+            self._debug(f"API response status: {api_response.status_code}", "info")
 
-            # Handle API response
-            if api_response.status_code == 200:
-                try:
-                    # Parse JSON response
-                    search_data = api_response.json()
+            # Check if the response is JSON
+            try:
+                json_response = api_response.json()
+                self._debug(f"Received JSON response with {len(json_response.get('titles', []))} results", "info")
 
-                    # Log a sample of the data
-                    self._debug("API returned data", "debug", {
-                        "totalCount": search_data.get("totalCount", 0),
-                        "titles_count": len(search_data.get("titles", [])),
-                        "sample": search_data.get("titles", [])[:1]  # First result only
-                    })
+                # Parse the JSON response
+                return self._parse_api_search_results(json_response, search_title=title, search_author=author)
 
-                    # Parse the results
-                    return self._parse_search_results_from_api(search_data, title, author)
+            except json.JSONDecodeError:
+                # If not valid JSON, log and fall back to HTML parsing
+                self._debug("API response is not valid JSON", "error",
+                        {"response_text": api_response.text[:200]})
 
-                except json.JSONDecodeError:
-                    error_msg = "Failed to parse JSON response from API"
-                    self._debug(error_msg, "error", {"response": api_response.text[:500]})
-                    return {
-                        "status": "Error",
-                        "message": error_msg
-                    }
-            else:
-                error_msg = f"API search failed with status code: {api_response.status_code}"
-                self._debug(error_msg, "error")
-                return {
-                    "status": "Error",
-                    "message": error_msg
-                }
+                # If API fails, try traditional search as fallback
+                self._debug("API search failed, falling back to traditional search", "info")
+
+                # Use the search URL from CURL referrer
+                search_url = f"{self.base_url}/ebc/lib/{self.lib_id}/"
+
+                # URL encode the search query
+                params = {"query": search_query}
+
+                self._debug(f"Traditional search: GET {search_url} with params: {params}", "info")
+
+                # Make the search request
+                response = self.session.get(
+                    search_url,
+                    params=params,
+                    timeout=45  # Increase timeout
+                )
+
+                self._debug(f"Traditional search response status: {response.status_code}", "info")
+
+                # Parse the HTML results
+                return self._parse_angular_search_results(response.text, title, author)
 
         except requests.Timeout:
             error_msg = "Search timed out"
@@ -282,11 +304,11 @@ class EbookCentralPortal:
                 "message": str(e)
             }
 
-    def _parse_search_results_from_api(self, data: Dict, search_title: str, search_author: str) -> Dict:
-        """Parse search results from Ebook Central API response.
+    def _parse_api_search_results(self, json_data: Dict, search_title: str, search_author: str) -> Dict:
+        """Parse search results from the API JSON response.
 
         Args:
-            data: JSON data from API
+            json_data: JSON data from API response
             search_title: Original search title
             search_author: Original search author
 
@@ -294,57 +316,212 @@ class EbookCentralPortal:
             Dict with search results
         """
         try:
-            # Check if we have results
-            if 'titles' not in data or not data['titles'] or data.get('totalCount', 0) == 0:
+            # Debug the complete structure of the response
+            self._debug("Examining API response structure", "debug",
+                    {"keys": list(json_data.keys() if json_data else [])})
+
+            # First check if we have any results
+            total_count = json_data.get('totalCount', 0)
+            titles = json_data.get('titles', [])
+
+            self._debug(f"API returned {total_count} results, with {len(titles)} titles", "info")
+
+            if not titles or total_count == 0:
                 self._debug(f"No results found for: {search_title}", "info")
                 return {
                     "status": "Not Found",
                     "title": search_title,
-                    "author": search_author
+                    "author": search_author,
+                    "message": "No results returned from API"
                 }
 
             # Get the first (best) result
-            first_result = data['titles'][0]
+            first_result = titles[0]
 
-            self._debug(f"Found result: {first_result.get('title')}", "info", first_result)
+            # Log sample of the data
+            self._debug("First result from API:", "debug", first_result)
 
-            book_id = first_result.get('id', '')
+            # Extract book details
+            book_id = str(first_result.get('id', ''))
             title = first_result.get('title', search_title)
+
+            # Handle authors - might be a list or formatted differently
             authors = first_result.get('authors', [])
-            author = '; '.join(authors) if authors else search_author
+            if isinstance(authors, list):
+                author = '; '.join(authors) if authors else search_author
+            else:
+                author = authors or search_author
+
             publisher = first_result.get('publisher', '')
-            pub_year = first_result.get('publicationYear', '')
+            year = str(first_result.get('publicationYear', ''))
 
-            # Construct view URL
+            # Check if download is available
+            download_available = first_result.get('downloadAvailable', False)
+
+            # Extract additional details if present
+            isbn = first_result.get('isbn', '')
+            eisbn = first_result.get('eisbn', '')
+
+            # Construct URLs
             view_url = f"{self.base_url}/lib/{self.lib_id}/detail.action?docID={book_id}"
-
-            # Determine download URL if available
-            download_url = f"{self.base_url}/lib/{self.lib_id}/detail.action?docID={book_id}&download=true"
-
-            # Check if full download is available (based on API response flags)
-            full_download_available = first_result.get('downloadAvailable', False)
-            if not full_download_available:
-                download_url = ""
-                self._debug(f"Download not available for: {title}", "info")
+            download_url = f"{self.base_url}/lib/{self.lib_id}/detail.action?docID={book_id}&download=true" if download_available else ""
 
             result = {
                 "status": "Found",
                 "title": title,
                 "author": author,
-                "format": "PDF/EPUB",  # ProQuest typically offers PDF and/or EPUB
+                "format": "PDF/EPUB",  # Default format for Ebook Central
                 "view_url": view_url,
                 "download_url": download_url,
                 "publisher": publisher,
-                "year": pub_year,
+                "year": year,
                 "book_id": book_id,
-                "ebook_id": book_id  # Used for download
+                "ebook_id": book_id,  # Used for download
+                "isbn": isbn,
+                "eisbn": eisbn
             }
 
-            self._debug(f"Parsed result: {title} by {author}", "info", result)
+            self._debug(f"Found book via API: {title} by {author}", "info", result)
             return result
 
         except Exception as e:
             error_msg = f"Error parsing API results: {str(e)}"
+            self._debug(error_msg, "error")
+            return {
+                "status": "Error",
+                "message": error_msg,
+                "title": search_title,
+                "author": search_author
+            }
+
+    def _parse_angular_search_results(self, html_content: str, search_title: str, search_author: str) -> Dict:
+        """Parse search results from the Angular UI HTML.
+
+        Args:
+            html_content: HTML content of search results page
+            search_title: Original search title
+            search_author: Original search author
+
+        Returns:
+            Dict with search results
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            # Look for book containers with the exact class
+            result_containers = soup.select('div.pub-list-item-container')
+
+            # If no results found with main selector, try alternative selectors
+            if not result_containers:
+                # Angular sometimes loads content dynamically, so the content might not be in the initial HTML
+                self._debug("No book containers found with primary selector", "info")
+
+                # Look for Angular app elements that might contain book data
+                angular_app = soup.select_one('app-search-book-result-item')
+                if angular_app:
+                    self._debug("Found Angular app components but no book containers", "info")
+                    # Angular might load content dynamically after initial HTML load
+
+                # Check if we can find book IDs with regex
+                book_id_matches = re.findall(r'book_results_item_(\d+)', html_content)
+                if book_id_matches:
+                    self._debug(f"Found book IDs via regex: {book_id_matches}", "info")
+                    # We found book IDs but couldn't parse containers - might be due to Angular loading
+
+                # Check for Angular data binding attributes that might contain book info
+                angular_data = re.search(r'\[books\]="([^"]+)"', html_content)
+                if angular_data:
+                    self._debug("Found Angular data binding that might contain book data", "info")
+
+                # Check if page is still loading by looking for loading indicators
+                loading = soup.select_one('.loading') or 'loading' in html_content.lower()
+                if loading:
+                    self._debug("Page appears to be still loading", "info")
+
+                # Return not found since we can't properly parse the dynamic content
+                return {
+                    "status": "Not Found",
+                    "title": search_title,
+                    "author": search_author,
+                    "message": "The search results might be loading dynamically and cannot be parsed from the initial HTML"
+                }
+
+            # Process the first result
+            first_container = result_containers[0]
+            self._debug(f"Found {len(result_containers)} result container(s)", "info")
+
+            # Get the book ID from the container ID attribute
+            container_id = first_container.get('id', '')
+            book_id_match = re.search(r'book_results_item_(\d+)', container_id)
+            book_id = book_id_match.group(1) if book_id_match else ''
+
+            if not book_id:
+                self._debug("Could not extract book ID from container", "error")
+                return {
+                    "status": "Error",
+                    "message": "Could not extract book ID",
+                    "title": search_title,
+                    "author": search_author
+                }
+
+            # Get the title from the h3 tag inside the title link
+            title_link = first_container.select_one('a.pub-list-item-title-link')
+            title_elem = title_link.select_one('h3') if title_link else None
+            title = title_elem.get_text().strip() if title_elem else search_title
+
+            # Get author from the auth-meta-link class
+            author_links = first_container.select('a.auth-meta-link')
+            authors = [link.get_text().strip() for link in author_links if link]
+            author = '; '.join(authors) if authors else search_author
+
+            # Get publisher and year
+            publisher_link = first_container.select_one('a.meta-publisher-link')
+            publisher = publisher_link.get_text().strip() if publisher_link else ""
+
+            year_span = first_container.select_one('span.meta-pub-year')
+            year = year_span.get_text().strip() if year_span else ""
+
+            # Check for download button with specific ID
+            download_btn_id = f"book_download_link_{book_id}"
+            download_btn = first_container.select_one(f'#{download_btn_id}')
+            has_download = download_btn is not None
+
+            # Extract view URL from the title link
+            view_url = ""
+            if title_link and title_link.has_attr('href'):
+                href = title_link['href']
+                if href.startswith('/'):
+                    view_url = f"{self.base_url}{href}"
+                elif href.startswith('http'):
+                    view_url = href
+                else:
+                    view_url = f"{self.base_url}/{href}"
+
+            # Construct download URL if download button exists
+            download_url = ""
+            if has_download:
+                doc_id_match = re.search(r'docID=([^&]+)', view_url)
+                doc_id = doc_id_match.group(1) if doc_id_match else book_id
+                download_url = f"{self.base_url}/lib/{self.lib_id}/detail.action?docID={doc_id}&download=true"
+
+            result = {
+                "status": "Found",
+                "title": title,
+                "author": author,
+                "format": "PDF/EPUB",  # Default format for Ebook Central
+                "view_url": view_url,
+                "download_url": download_url if has_download else "",
+                "publisher": publisher,
+                "year": year,
+                "book_id": book_id,
+                "ebook_id": book_id  # Used for download
+            }
+
+            self._debug(f"Found book: {title} by {author}", "info", result)
+            return result
+
+        except Exception as e:
+            error_msg = f"Error parsing Angular search results: {str(e)}"
             self._debug(error_msg, "error")
             return {
                 "status": "Error",
@@ -401,7 +578,7 @@ class EbookCentralPortal:
             download_form = soup.find('form', {'id': 'downloadForm'}) or soup.find('form', {'name': 'downloadForm'})
             if not download_form:
                 self._debug("Could not find download form", "error",
-                           {"page_snippet": download_page.text[:1000]})
+                        {"page_snippet": download_page.text[:1000]})
                 return {
                     "success": False,
                     "message": "Could not find download form"
@@ -516,7 +693,7 @@ class EbookCentralPortal:
                 else:
                     error_msg = "Could not find download link or form"
                     self._debug(error_msg, "error",
-                               {"page_snippet": confirm_response.text[:1000]})
+                            {"page_snippet": confirm_response.text[:1000]})
                     return {
                         "success": False,
                         "message": error_msg
