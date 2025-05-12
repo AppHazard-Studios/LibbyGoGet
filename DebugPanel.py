@@ -132,7 +132,7 @@ class DebugPanel(QWidget):
             level: Log level (info, error, debug)
             data: Optional data object to display in details
         """
-        # Create formatted message - FIXED: proper time handling
+        # Create formatted message with proper time handling
         current_time = time.localtime()
         time_str = time.strftime("%H:%M:%S", current_time)
 
