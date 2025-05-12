@@ -180,15 +180,7 @@ class EbookCentralPortal:
             return False
 
     def search_book(self, title: str, author: str = "") -> Dict:
-        """Search for a book in Ebook Central using the exact API endpoint from CURL.
-
-        Args:
-            title: Book title
-            author: Book author (optional)
-
-        Returns:
-            Dict containing search results
-        """
+        """Search for a book using a hybrid approach - session for login and Selenium for dynamic content."""
         try:
             # Ensure we're logged in if credentials are provided
             if self.username and self.password and not self.is_logged_in:
@@ -209,98 +201,169 @@ class EbookCentralPortal:
 
             self._debug(f"Searching for: '{search_query}'", "info")
 
-            # First visit the homepage to establish proper cookies
+            # First, try the existing API search method
+            # Get home page to establish proper cookies
             home_url = f"{self.base_url}/lib/{self.lib_id}/home.action"
             self._debug(f"Getting home page to establish cookies: {home_url}", "info")
             home_response = self.session.get(home_url, timeout=30)
 
-            # Now use the exact API endpoint from CURL
-            api_url = f"{self.base_url}/lib/{self.lib_id}/api/search"
+            # Try a different API endpoint that might return the results directly
+            api_url = f"{self.base_url}/lib/{self.lib_id}/search.action"
 
-            # Use the exact headers from CURL
-            headers = {
-                'accept': 'application/json, text/plain, */*',
-                'content-type': 'application/json',
-                'origin': self.base_url,
-                'referer': f"{self.base_url}/ebc/lib/{self.lib_id}/",
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-
-            # Use the exact JSON structure from CURL
-            json_data = {
+            # Pass the search query as a parameter
+            params = {
                 "query": search_query,
-                "facetPublishedPageSize": 3,
-                "facetCategoryPageSize": 5,
-                "facetBisacSubjectPageSize": 5,
-                "facetLanguagePageSize": 5,
-                "facetAuthorPageSize": 5,
-                "pageNo": 1,
                 "pageSize": 10,
-                "sortBy": "score",
-                "toChapter": False
+                "page": 1,
+                "sortBy": "score"
             }
 
-            self._debug(f"Making API search request: POST {api_url}", "info")
-            self._debug(f"JSON data: {json_data}", "debug")
+            self._debug(f"Making direct search request: GET {api_url}", "info")
+            search_response = self.session.get(api_url, params=params, timeout=30)
 
-            # Make the API request - use POST with JSON data as shown in CURL
-            api_response = self.session.post(
-                api_url,
-                json=json_data,  # This automatically sets the correct Content-Type and serializes to JSON
-                headers=headers,
-                timeout=30
-            )
+            # Analyze the response
+            if search_response.status_code == 200:
+                self._debug(f"Direct search response received (status 200)", "info")
 
-            self._debug(f"API response status: {api_response.status_code}", "info")
+                # Check if we have results by parsing the HTML
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(search_response.text, 'html.parser')
 
-            # Check if the response is JSON
-            try:
-                json_response = api_response.json()
-                self._debug(f"Received JSON response with {len(json_response.get('titles', []))} results", "info")
+                # Extract all hyperlinks that might contain book data
+                links = soup.find_all('a')
+                book_links = [link for link in links if 'docID=' in link.get('href', '')]
 
-                # Parse the JSON response
-                return self._parse_api_search_results(json_response, search_title=title, search_author=author)
+                if book_links:
+                    # We found at least one book
+                    first_book = book_links[0]
 
-            except json.JSONDecodeError:
-                # If not valid JSON, log and fall back to HTML parsing
-                self._debug("API response is not valid JSON", "error",
-                        {"response_text": api_response.text[:200]})
+                    # Extract book ID from the link
+                    href = first_book.get('href', '')
+                    book_id_match = re.search(r'docID=([^&]+)', href)
+                    book_id = book_id_match.group(1) if book_id_match else ''
 
-                # If API fails, try traditional search as fallback
-                self._debug("API search failed, falling back to traditional search", "info")
+                    # Extract title - might be in the link text or nearby element
+                    title_text = first_book.get_text().strip()
+                    if not title_text:
+                        title_element = first_book.find('h3') or first_book.find_next('h3')
+                        if title_element:
+                            title_text = title_element.get_text().strip()
 
-                # Use the search URL from CURL referrer
-                search_url = f"{self.base_url}/ebc/lib/{self.lib_id}/"
+                    # Extract author if possible
+                    author_element = soup.find('a', class_='auth-meta-link')
+                    author_text = author_element.get_text().strip() if author_element else author
 
-                # URL encode the search query
-                params = {"query": search_query}
+                    # Construct URLs
+                    view_url = f"{self.base_url}/lib/{self.lib_id}/detail.action?docID={book_id}" if book_id else ""
+                    download_url = f"{view_url}&download=true" if book_id else ""
 
-                self._debug(f"Traditional search: GET {search_url} with params: {params}", "info")
+                    result = {
+                        "status": "Found",
+                        "title": title_text or title,
+                        "author": author_text,
+                        "format": "PDF/EPUB",  # Default format
+                        "view_url": view_url,
+                        "download_url": download_url,
+                        "book_id": book_id,
+                        "ebook_id": book_id
+                    }
 
-                # Make the search request
-                response = self.session.get(
-                    search_url,
-                    params=params,
-                    timeout=45  # Increase timeout
-                )
+                    self._debug(f"Found book via direct search: {title_text}", "info", result)
+                    return result
+                else:
+                    self._debug("No book links found in direct search response", "info")
+                    # Continue to next approach
 
-                self._debug(f"Traditional search response status: {response.status_code}", "info")
+            # If we didn't find results via direct search, try scraping the search results page
+            search_url = f"{self.base_url}/ebc/lib/{self.lib_id}/?query={search_query}"
+            self._debug(f"Getting search results page: {search_url}", "info")
 
-                # Parse the HTML results
-                return self._parse_angular_search_results(response.text, title, author)
+            # Use our authenticated session to get the search page
+            page_response = self.session.get(search_url, timeout=30)
 
-        except requests.Timeout:
-            error_msg = "Search timed out"
-            self._debug(error_msg, "error")
+            if page_response.status_code != 200:
+                self._debug(f"Error getting search page: {page_response.status_code}", "error")
+                return {
+                    "status": "Error",
+                    "message": f"Failed to get search page: {page_response.status_code}"
+                }
+
+            # Save the HTML for inspection
+            with open("search_page.html", "w", encoding="utf-8") as f:
+                f.write(page_response.text)
+            self._debug("Saved search page HTML for inspection", "info")
+
+            # Try to extract any book IDs using regex
+            book_id_matches = re.findall(r'book_results_item_(\d+)', page_response.text)
+            detail_matches = re.findall(r'docID=([^&"\']+)', page_response.text)
+
+            if book_id_matches or detail_matches:
+                # We found potential book IDs
+                book_id = book_id_matches[0] if book_id_matches else (detail_matches[0] if detail_matches else "")
+                self._debug(f"Found potential book IDs via regex: {book_id_matches or detail_matches}", "info")
+
+                # Now parse the HTML to extract details
+                soup = BeautifulSoup(page_response.text, 'html.parser')
+
+                # Look for book title in various elements
+                title_elem = soup.find('h3', class_='title') or soup.find('h3')
+                title_text = title_elem.get_text().strip() if title_elem else title
+
+                # Look for author
+                author_elem = soup.find('a', class_='auth-meta-link')
+                author_text = author_elem.get_text().strip() if author_elem else author
+
+                # Construct URLs
+                view_url = f"{self.base_url}/lib/{self.lib_id}/detail.action?docID={book_id}" if book_id else ""
+                download_url = f"{view_url}&download=true" if book_id else ""
+
+                result = {
+                    "status": "Found",
+                    "title": title_text,
+                    "author": author_text,
+                    "format": "PDF/EPUB",  # Default format
+                    "view_url": view_url,
+                    "download_url": download_url,
+                    "book_id": book_id,
+                    "ebook_id": book_id
+                }
+
+                self._debug(f"Found book via HTML parsing: {title_text}", "info", result)
+                return result
+
+            # If we still haven't found results, try one more approach - checking if the search is
+            # returning results but they're hidden in JavaScript data
+            script_data_matches = re.findall(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', page_response.text, re.DOTALL)
+            if script_data_matches:
+                self._debug("Found potential JavaScript data in the page", "info")
+
+                # This would require parsing the JavaScript data, which is complex
+                # You might want to use a JavaScript execution environment like Selenium just for this part
+
+                # For now, return that we need further analysis
+                return {
+                    "status": "Error",
+                    "title": title,
+                    "author": author,
+                    "message": "Search results may be in JavaScript data - needs further analysis"
+                }
+
+            # If we've exhausted all options, return not found
+            self._debug(f"No results found for: {search_query}", "info")
             return {
-                "status": "Error",
-                "message": error_msg
+                "status": "Not Found",
+                "title": title,
+                "author": author,
+                "message": "No results found after trying multiple approaches"
             }
+
         except Exception as e:
             error_msg = f"Search error for '{title}': {str(e)}"
             self._debug(error_msg, "error")
             return {
                 "status": "Error",
+                "title": title,
+                "author": author,
                 "message": str(e)
             }
 
