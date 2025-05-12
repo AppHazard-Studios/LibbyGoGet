@@ -4,7 +4,7 @@ Debug panel to display real-time information about application operations.
 
 import json
 import logging
-import time  # Added missing import
+import time
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit, QPushButton, QLabel,
     QCheckBox, QHBoxLayout, QSplitter
